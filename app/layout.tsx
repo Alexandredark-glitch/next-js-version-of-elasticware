@@ -16,7 +16,7 @@ const fontSans = Inter({
   variable: "--font-sans",
   subsets: ["latin"],
   fallback: ["system-ui", "sans-serif"],
-  display: "optional",
+  
 });
 
 const fontHeading = Fraunces({
@@ -24,7 +24,7 @@ const fontHeading = Fraunces({
   subsets: ["latin"],
   fallback: ["Georgia", "serif"],
   weight: ["400", "600", "700", "900"],
-  display: "optional",
+ 
 });
 
 const fontDisplay = Bungee({
@@ -32,7 +32,7 @@ const fontDisplay = Bungee({
   variable: "--font-display",
   subsets: ["latin"],
   fallback: ["Arial Narrow", "sans-serif"],
-  display: "optional",
+ 
 });
 
 const fontMono = JetBrains_Mono({
@@ -40,7 +40,7 @@ const fontMono = JetBrains_Mono({
   subsets: ["latin"],
   fallback: ["monospace"],
   weight: ["400", "700"],
-  display: "optional",
+ 
 });
 
 export const metadata: Metadata = {
