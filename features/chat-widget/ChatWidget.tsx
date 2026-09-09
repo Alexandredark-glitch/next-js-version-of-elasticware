@@ -1,0 +1,347 @@
+"use client";
+
+import { useEffect, useState } from "react";
+
+import { useTicketMessages } from "@/hooks/useTicketMessages";
+import { useWidgetSupabase } from "@/hooks/useWidgetSupabase";
+import { useWidgetSession } from "@/hooks/useWidgetSession";
+import { useGlobalError } from "@/hooks/useGlobalError";
+
+import { MessageList } from "./MessageList";
+import { Composer } from "./Composer";
+import { BOT_GREETING, type ChatMessage } from "./types";
+import * as Sentry from "@sentry/nextjs";
+
+type ApiResponse = {
+  ok?: boolean;
+  error?: string;
+  ticket_id?: string;
+  resolved?: boolean;
+  issues?: unknown;
+};
+
+async function postForm(
+  url: string,
+  fields: Record<string, string>,
+): Promise<ApiResponse> {
+  const body = new URLSearchParams(fields);
+
+  const response = await fetch(url, {
+    method: "POST",
+    body,
+  });
+
+  let data: ApiResponse = {};
+
+  try {
+    data = (await response.json()) as ApiResponse;
+  } catch {
+    data = {};
+  }
+
+  if (!response.ok) {
+    Sentry.captureException(new Error(`Request failed: ${response.status} ${response.statusText}`));
+    return {
+      ...data,
+      error: data.error || "Request failed",
+    };
+  }
+
+  return data;
+}
+
+export function ChatWidget({ orgKey }: { orgKey: string }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  const [isSending, setIsSending] = useState(false);
+  const [isEnding, setIsEnding] = useState(false);
+
+  const { sessionId, ticketId, saveTicketId, clearSession } =
+    useWidgetSession(orgKey);
+
+  const { client: scopedClient, error: authError } = useWidgetSupabase(
+    sessionId,
+    orgKey,
+  );
+
+  const { data: history = [], isLoading: isLoadingHistory } =
+    useTicketMessages(ticketId, scopedClient ?? undefined);
+
+  const { setError, clearError } = useGlobalError();
+
+  const [pendingText, setPendingText] = useState<string | null>(null);
+
+  const dbMessages: ChatMessage[] = history.map((m) => ({
+    id: m.id,
+    sender: m.sender as "customer" | "bot" | "agent",
+    text: m.content,
+    timestamp: new Date(m.created_at).getTime(),
+  }));
+
+  const hasArrived = Boolean(
+    pendingText &&
+      dbMessages.some(
+        (m) => m.text === pendingText && m.sender === "customer",
+      ),
+  );
+
+  const optimisticMessage: ChatMessage | null =
+    !hasArrived && pendingText
+      ? {
+          id: "pending",
+          sender: "customer",
+          text: pendingText,
+          timestamp: Date.now(),
+        }
+      : null;
+
+  const messages: ChatMessage[] = [
+    BOT_GREETING,
+    ...dbMessages,
+    ...(optimisticMessage ? [optimisticMessage] : []),
+  ];
+
+  const isHydrating =
+    Boolean(ticketId) &&
+    isLoadingHistory &&
+    messages.length === 1 &&
+    !pendingText;
+
+  useEffect(() => {
+    if (authError) {
+      Sentry.captureException(new Error(`Authentication error: ${authError}`));
+      setError(authError);
+    }
+  }, [authError, setError]);
+
+  useEffect(() => {
+    if (hasArrived) {
+      setPendingText(null);
+    }
+  }, [hasArrived]);
+
+  /*
+   * Realtime: ticket resolved externally
+   */
+  useEffect(() => {
+    if (!ticketId || !scopedClient) return;
+
+    const channel = scopedClient
+      .channel(`ticket-status:${ticketId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "tickets",
+          filter: `id=eq.${ticketId}`,
+        },
+        (payload) => {
+          if (payload.new.status === "resolved") {
+            clearSession();
+            setPendingText(null);
+            clearError();
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      scopedClient.removeChannel(channel);
+    };
+  }, [ticketId, clearSession, scopedClient, clearError]);
+
+  const handleSend = async (text: string) => {
+    const trimmed = text.trim();
+
+    if (!trimmed || isSending) return;
+
+    clearError();
+    setPendingText(trimmed);
+    setIsSending(true);
+
+    try {
+      const result = ticketId
+        ? await postForm("/api/messages", {
+            ticket_id: ticketId,
+            sender: "customer",
+            content: trimmed,
+          })
+        : await postForm("/api/tickets", {
+            org_key: orgKey,
+            session_id: sessionId,
+            content: trimmed,
+          });
+
+      if (result.error) {
+        Sentry.captureException(new Error(`Request failed: ${result.error}`));
+        setError(result.error);
+        return;
+      }
+
+      if (result.ticket_id) {
+        saveTicketId(result.ticket_id);
+      }
+
+      clearError();
+    } catch {
+      setError("Failed to send");
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleEndChat = async () => {
+    if (!ticketId || isEnding) return;
+
+    clearError();
+    setIsEnding(true);
+
+    try {
+      const result = await postForm("/api/tickets", {
+        intent: "resolve",
+        ticket_id: ticketId,
+      });
+
+      if (result.error) {
+        Sentry.captureException(new Error(`Failed to end chat: ${result.error}`));
+        setError(result.error);
+        return;
+      }
+
+      if (result.ok) {
+        clearSession();
+        setPendingText(null);
+        clearError();
+      }
+    } catch {
+      setError("Failed to end chat");
+    } finally {
+      setIsEnding(false);
+    }
+  };
+
+  const isAuthenticating = !scopedClient && !authError;
+
+  return (
+    <>
+      {!isOpen && (
+        <button
+          onClick={() => setIsOpen(true)}
+          className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-5 py-3.5 bg-accent-500 text-white font-semibold rounded-full shadow-lg shadow-accent-500/30 hover:bg-accent-600 animate-pulse-ring transition-colors focus-ring"
+          aria-label="Open chat"
+        >
+          <span className="w-5 h-5 flex items-center justify-center">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="w-5 h-5"
+            >
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+          </span>
+
+          <span className="text-sm">Chat with us</span>
+        </button>
+      )}
+
+      {isOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="chat-widget-title"
+          tabIndex={-1}
+          className="fixed bottom-6 right-6 z-50 w-[calc(100vw-3rem)] sm:w-96 h-[32rem] max-h-[80vh] bg-charcoal-800 border border-charcoal-600 rounded-2xl shadow-2xl shadow-charcoal-950/50 flex flex-col overflow-hidden animate-bounce-in"
+        >
+          <div className="flex items-center justify-between px-4 py-3 bg-charcoal-900 border-b border-charcoal-700">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-teal-500/20 border border-teal-500/30 flex items-center justify-center">
+                <span className="w-3 h-3 rounded-full bg-teal-400 animate-pulse" />
+              </div>
+
+              <div>
+                <p
+                  id="chat-widget-title"
+                  className="text-sm font-semibold text-cream-100"
+                >
+                  ElasticBot
+                </p>
+                <p className="text-xs text-teal-400">Online now</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {ticketId && (
+                <button
+                  onClick={handleEndChat}
+                  disabled={isEnding}
+                  className={`text-xs px-2 py-1 rounded transition-colors ${
+                    isEnding
+                      ? "text-charcoal-500 cursor-wait"
+                      : "text-charcoal-400 hover:text-accent-400 hover:bg-charcoal-800"
+                  }`}
+                >
+                  {isEnding ? "Ending…" : "End chat"}
+                </button>
+              )}
+
+              <button
+                onClick={() => setIsOpen(false)}
+                className="w-8 h-8 flex items-center justify-center text-charcoal-300 hover:text-cream-100 hover:bg-charcoal-700 rounded-lg transition-colors focus-ring"
+                aria-label="Close chat"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="w-4 h-4"
+                >
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {isAuthenticating ? (
+            <div className="flex-1 flex items-center justify-center">
+              <span className="text-sm text-charcoal-400">
+                Connecting…
+              </span>
+            </div>
+          ) : isHydrating ? (
+            <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+              <div className="flex flex-col gap-1.5 items-start">
+                <div className="h-3 w-16 rounded bg-charcoal-700 animate-pulse" />
+                <div className="h-10 w-44 rounded-2xl rounded-bl-md bg-charcoal-700 animate-pulse" />
+              </div>
+            </div>
+          ) : (
+            <>
+              <MessageList messages={messages} />
+
+              {isSending && (
+                <div className="px-4 py-1 flex-shrink-0">
+                  <span className="text-xs text-charcoal-500">
+                    Sending…
+                  </span>
+                </div>
+              )}
+            </>
+          )}
+
+          <Composer isSending={isSending} onSend={handleSend} />
+        </div>
+      )}
+    </>
+  );
+}
