@@ -422,6 +422,7 @@ The production build command is:
 npm run build
 ```
 
+
 This is intentional because the build must produce both:
 
 ```text
@@ -429,7 +430,7 @@ Next.js application
 +
 public/widget.js
 ```
-
+Through:  "build": "npm run build:widget && next build",
 ### Production architecture
 
 ```text

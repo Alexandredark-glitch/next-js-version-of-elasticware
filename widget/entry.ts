@@ -276,7 +276,7 @@ const renderMessages = (container: HTMLDivElement, messages: ChatMessage[]) => {
     if (id) messageMap.set(id, el as HTMLElement);
   });
 
-  // Remove orphaned DOM nodes (e.g., replaced optimistic messages)
+ 
   messageMap.forEach((el, id) => {
     if (!messages.some((m) => m.id === id)) {
       el.remove();
@@ -563,7 +563,7 @@ const destroySupabase = async () => {
   // Immediately invalidate our reference.
   supabase = null;
 
-  // This client is no longer the active widget client.
+  
   if (__supabaseClient === client) {
     __supabaseClient = null;
   }
@@ -673,7 +673,7 @@ const clearSession = async () => {
           filter: `ticket_id=eq.${subscribedTicketId}`,
         },
         (payload) => {
-          // Ignore events from an old channel lifecycle.
+          
           if (
             subscribedGeneration !==
             channelGeneration
@@ -688,7 +688,7 @@ const clearSession = async () => {
             ticket_id?: string;
           };
 
-          // Ignore events for another ticket.
+          
           if (
             raw.ticket_id &&
             raw.ticket_id !== state.ticketId
@@ -759,11 +759,6 @@ const clearSession = async () => {
     msgChannel = channel;
 
     channel.subscribe((status, err) => {
-      console.log(
-        `[Realtime] Message subscription ${subscribedTicketId}:`,
-        status,
-        err,
-      );
 
       if (
         status === "CHANNEL_ERROR" ||
@@ -861,11 +856,6 @@ const clearSession = async () => {
     ticketChannel = channel;
 
     channel.subscribe((status, err) => {
-      console.log(
-        `[Realtime] Ticket subscription ${subscribedTicketId}:`,
-        status,
-        err,
-      );
 
       if (
         status === "CHANNEL_ERROR" ||
@@ -1019,7 +1009,6 @@ const clearSession = async () => {
         }
       } catch (err) {
         console.error("ElasticBot:", err);
-        // Remove optimistic message on failure
         state.messages = state.messages.filter((m) => m.id !== optimisticId);
         state.error = err instanceof Error ? err.message : "Failed to send";
       } finally {
